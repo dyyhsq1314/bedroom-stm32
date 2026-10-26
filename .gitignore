@@ -1,0 +1,35 @@
+# Keil MDK build output
+*.o
+*.d
+*.crf
+*.axf
+*.map
+*.lst
+*.lnp
+*.dep
+*.htm
+*.iex
+*.sct
+*.Bak
+!startup_stm32f103xb.lst
+
+# Keil per-user UI layout (machine-specific)
+*.uvguix.*
+
+# System / editor junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+*~RF*.TMP
+*.tmp
+*.bak
+.vscode/
+.idea/
+
+# Archives of the same source tree
+*.rar
+*.7z
+
+# Python
+__pycache__/
+*.pyc

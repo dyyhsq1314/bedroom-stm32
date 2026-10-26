@@ -1,0 +1,146 @@
+FreeRTOS Tickless Idle 模式源码解析 (从 osKernelStart() 开始)
+1. 整体流程概述
+当 configUSE_TICKLESS_IDLE=1 时，FreeRTOS 会在系统空闲时进入低功耗模式，暂停系统节拍(tick)中断以节省功耗。我们从 osKernelStart() 开始分析这一机制的工作原理。
+
+2. osKernelStart() 入口
+osKernelStart() 是 FreeRTOS 的启动函数，它会初始化调度器并启动第一个任务：
+
+c
+void osKernelStart(void) {
+    /* 初始化内核 */
+    vTaskStartScheduler();
+}
+3. vTaskStartScheduler()
+在 vTaskStartScheduler() 中，关键部分是与 tickless 相关的初始化：
+
+c
+void vTaskStartScheduler(void) {
+    /* ... 其他初始化 ... */
+    
+    #if (configUSE_TICKLESS_IDLE != 0)
+    {
+        /* 初始化 tickless idle 模式所需的变量 */
+        portSUPPRESS_TICKS_AND_SLEEP_PROCESSOR = xMaximumPossibleSuppressedTicks;
+    }
+    #endif
+    
+    /* 启动 tick 定时器 */
+    xPortStartScheduler();
+    
+    /* ... */
+}
+4. Tickless 核心机制
+当系统进入空闲状态时，会调用 vPortSuppressTicksAndSleep() 函数：
+
+c
+void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime) {
+    /* 计算可以跳过的 tick 数 */
+    TickType_t xModifiableIdleTime = xExpectedIdleTime;
+    
+    /* 确保不会跳过超过最大允许值 */
+    if(xModifiableIdleTime > xMaximumPossibleSuppressedTicks) {
+        xModifiableIdleTime = xMaximumPossibleSuppressedTicks;
+    }
+    
+    /* 停止 tick 中断 */
+    portDISABLE_INTERRUPTS();
+    
+    /* 确认是否真的可以进入低功耗 */
+    if(eTaskConfirmSleepModeStatus() == eAbortSleep) {
+        /* 不能进入，恢复中断 */
+        portENABLE_INTERRUPTS();
+    } else {
+        /* 设置唤醒时间 */
+        prvSetWakeTimeInterrupt(xModifiableIdleTime);
+        
+        /* 进入低功耗模式 */
+        portENTER_LOW_POWER();
+        
+        /* 唤醒后，计算实际跳过的 tick 数 */
+        TickType_t xElapsedTicks = xTaskGetTickCount() - xTickCount;
+        
+        /* 调整系统 tick 计数器 */
+        vTaskStepTick(xElapsedTicks);
+        
+        /* 恢复中断 */
+        portENABLE_INTERRUPTS();
+    }
+}
+5. 关键函数解析
+5.1 prvSetWakeTimeInterrupt()
+c
+static void prvSetWakeTimeInterrupt(TickType_t xExpectedIdleTime) {
+    /* 根据硬件平台设置唤醒定时器 */
+    /* 通常是配置一个硬件定时器在 xExpectedIdleTime 个 tick 后触发中断 */
+    /* 具体实现依赖于移植层 */
+}
+5.2 portENTER_LOW_POWER()
+这是一个移植层宏/函数，实际进入低功耗模式的指令是硬件相关的：
+
+c
+#define portENTER_LOW_POWER() \
+    __asm volatile( "dsb" ::: "memory" ); \
+    __asm volatile( "wfi" ); \
+    __asm volatile( "isb" );
+5.3 vTaskStepTick()
+唤醒后调整系统 tick 计数器：
+
+c
+void vTaskStepTick(TickType_t xTicksToJump) {
+    /* 确保调度器已挂起 */
+    configASSERT(xTaskGetSchedulerState() == taskSCHEDULER_SUSPENDED);
+    
+    /* 调整 tick 计数 */
+    xTickCount += xTicksToJump;
+    
+    /* 检查是否有任务因跳过的 tick 而需要解除阻塞 */
+    prvSwitchTimerLists();
+}
+6. 空闲任务中的调用
+Tickless 机制主要在空闲任务中触发：
+
+c
+static portTASK_FUNCTION(prvIdleTask, pvParameters) {
+    for(;;) {
+        /* 检查是否可以进入 tickless 模式 */
+        #if (configUSE_TICKLESS_IDLE != 0)
+        {
+            TickType_t xExpectedIdleTime = prvGetExpectedIdleTime();
+            
+            if(xExpectedIdleTime >= configEXPECTED_IDLE_TIME_BEFORE_SLEEP) {
+                vTaskSuspendAll();
+                {
+                    /* 进入 tickless 模式 */
+                    vPortSuppressTicksAndSleep(xExpectedIdleTime);
+                }
+                xTaskResumeAll();
+            }
+        }
+        #endif
+        
+        /* 常规空闲任务处理 */
+    }
+}
+7. 关键配置参数
+configEXPECTED_IDLE_TIME_BEFORE_SLEEP: 进入 tickless 模式的最小空闲 tick 数
+
+configMAX_TICKLESS_IDLE_TICKS: 最大可跳过的 tick 数
+
+configPRE_SLEEP_PROCESSING 和 configPOST_SLEEP_PROCESSING: 进入/退出低功耗模式时的回调函数
+
+8. 总结
+FreeRTOS 的 tickless idle 模式通过以下步骤工作：
+
+系统进入空闲状态
+
+计算可跳过的 tick 数
+
+暂停 tick 中断，设置唤醒定时器
+
+进入低功耗模式
+
+唤醒后调整系统 tick 计数
+
+恢复系统正常运行
+
+这种机制显著降低了系统在空闲时的功耗，特别适合电池供电的嵌入式设备。
